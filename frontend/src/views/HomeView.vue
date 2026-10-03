@@ -39,6 +39,36 @@ const selectedDips = computed(() => {
   return dips.value.filter((d) => d.rollId === selectedId.value)
 })
 
+// 与选中卷同帆布间的「浸渍中」邻卷及其克重差（自身浸渍中时不含自己）
+const selectedDippingNeighbors = computed(() => {
+  const roll = selected.value
+  if (!roll) return []
+  return rolls.value
+    .filter(
+      (r) =>
+        r.loftId === roll.loftId &&
+        r.id !== roll.id &&
+        r.status === 'dipping'
+    )
+    .map((r) => ({
+      ...r,
+      diff: Math.abs(r.fabricWeightGsm - roll.fabricWeightGsm),
+    }))
+})
+
+const GSM_LIMIT = 40
+const selectedMaxDiff = computed(() =>
+  selectedDippingNeighbors.value.reduce(
+    (m, n) => Math.max(m, n.diff),
+    null
+  )
+)
+const selectedWillBeBlocked = computed(() => {
+  const roll = selected.value
+  if (!roll || roll.status !== 'raw') return false
+  return selectedMaxDiff.value !== null && selectedMaxDiff.value > GSM_LIMIT
+})
+
 const recentFeed = computed(() => dips.value.slice(0, 12))
 
 async function load() {
@@ -107,8 +137,12 @@ async function logDip() {
     if (selected.value.status === 'raw') {
       try {
         await api.patch(`/rolls/${selected.value.id}/`, { status: 'dipping' })
-      } catch {
-        /* 浸渍已记；状态跟进失败不阻断 */
+      } catch (pe) {
+        /* 浸渍已记；状态跟进被克重差规则挡住时，给出中文原因 */
+        panelError.value =
+          pe.response?.data?.status?.[0] ||
+          pe.response?.data?.detail ||
+          '浸渍记录已写入，但转入浸渍中被挡（与同间浸渍中邻卷克重差超过 40）'
       }
     }
     dipForm.cureHours = ''
@@ -133,7 +167,7 @@ onMounted(load)
     <header class="rack-head">
       <div>
         <h1>帆布间晾晒架</h1>
-        <p class="sub">按帆布间挂卷；点选布卷登记浸渍或标固化。固化规则：最近浸渍时长 ≥ 12 小时。</p>
+        <p class="sub">按帆布间挂卷；点选布卷登记浸渍或标固化。固化规则：最近浸渍时长 ≥ 12 小时；原布转浸渍中：与同间浸渍中邻卷克重差 ≤ 40。</p>
       </div>
       <button class="btn secondary" type="button" @click="load">刷新架面</button>
     </header>
@@ -210,6 +244,22 @@ onMounted(load)
         </span>
         <span class="hint">{{ selected.fabricWeightGsm }} gsm</span>
       </div>
+
+      <div class="drawer-neighbors">
+        <p class="hint" style="margin:0">同间浸渍中邻卷克重差（上限 {{ GSM_LIMIT }}，含）：</p>
+        <ul v-if="selectedDippingNeighbors.length" class="nb-list">
+          <li v-for="n in selectedDippingNeighbors" :key="n.id">
+            <strong>{{ n.rollCode }}</strong>
+            <span>{{ n.fabricWeightGsm }} gsm</span>
+            <span :class="n.diff > GSM_LIMIT ? 'error' : 'ok'">差 {{ n.diff }}</span>
+          </li>
+        </ul>
+        <p v-else class="hint" style="margin:0">同间暂无浸渍中邻卷，转入浸渍中不比克重。</p>
+        <p v-if="selectedWillBeBlocked" class="error" style="margin:6px 0 0">
+          与邻卷克重差超过 {{ GSM_LIMIT }}，此卷转入浸渍中会被挡住。
+        </p>
+      </div>
+
       <p v-if="selected.notes" class="hint">{{ selected.notes }}</p>
       <p v-if="panelError" class="error">{{ panelError }}</p>
 
@@ -271,3 +321,29 @@ onMounted(load)
     </aside>
   </div>
 </template>
+
+<style scoped>
+.drawer-neighbors {
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(255, 253, 248, 0.7);
+  display: grid;
+  gap: 6px;
+}
+.nb-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+}
+.nb-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 0.9rem;
+  border-bottom: 1px dashed var(--line);
+  padding-bottom: 4px;
+}
+</style>

@@ -1,7 +1,7 @@
 from rest_framework import serializers
 
 from .models import ClothRoll, DipRun, Loft
-from .rules import can_mark_roll_cured
+from .rules import can_mark_roll_cured, gsm_blocker
 
 
 class LoftSerializer(serializers.ModelSerializer):
@@ -50,15 +50,35 @@ class ClothRollSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError({"rollCode": "同一帆布间卷号必须唯一"})
 
         new_status = attrs.get("status")
+        if new_status is None:
+            return attrs
+
         if new_status == ClothRoll.STATUS_CURED:
             roll = self.instance
             if roll is None:
                 raise serializers.ValidationError(
                     {"status": "新建布卷不能直接设为已固化"}
                 )
-            # 合并未提交字段到临时视角：用当前实例校验
+            # 固化只认最近浸渍时长满 12 小时；克重差不得掺入此判断
             ok, msg = can_mark_roll_cured(roll)
             if not ok:
+                raise serializers.ValidationError({"status": msg})
+
+        if new_status == ClothRoll.STATUS_DIPPING and (
+            self.instance is None or self.instance.status != ClothRoll.STATUS_DIPPING
+        ):
+            # 原布（或其它非浸渍中状态）转入浸渍中：与同间已在浸渍中的邻卷比克重。
+            # 同间没有浸渍中邻卷时 gsm_blocker 不拦截。
+            weight = attrs.get("fabric_weight_gsm")
+            roll = self.instance
+            if roll is None:
+                roll = ClothRoll(
+                    loft=loft, fabric_weight_gsm=weight if weight is not None else 380
+                )
+            elif weight is None:
+                weight = roll.fabric_weight_gsm
+            msg = gsm_blocker(roll, weight)
+            if msg:
                 raise serializers.ValidationError({"status": msg})
         return attrs
 
