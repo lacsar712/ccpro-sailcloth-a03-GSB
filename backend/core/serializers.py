@@ -1,7 +1,7 @@
 from rest_framework import serializers
 
 from .models import ClothRoll, DipRun, Loft
-from .rules import can_mark_roll_cured
+from .rules import can_mark_roll_cured, can_start_dipping
 
 
 class LoftSerializer(serializers.ModelSerializer):
@@ -50,6 +50,29 @@ class ClothRollSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError({"rollCode": "同一帆布间卷号必须唯一"})
 
         new_status = attrs.get("status")
+        prior_status = self.instance.status if self.instance else None
+
+        # 原布（或其它非浸渍中状态）→ 浸渍中：校验同帆布间克重差
+        if (
+            new_status == ClothRoll.STATUS_DIPPING
+            and prior_status != ClothRoll.STATUS_DIPPING
+        ):
+            weight = attrs.get("fabric_weight_gsm")
+            if weight is None:
+                weight = (
+                    self.instance.fabric_weight_gsm if self.instance else 380
+                )
+            # 以载荷中的最新克重/帆布间做临时视角，不落库
+            probe = ClothRoll(
+                loft=loft,
+                pk=self.instance.pk if self.instance else None,
+                fabric_weight_gsm=weight,
+            )
+            ok, msg = can_start_dipping(probe)
+            if not ok:
+                raise serializers.ValidationError({"status": msg})
+
+        # 已固化：只认最近一次浸渍固化时长满 12 小时，与克重差无关
         if new_status == ClothRoll.STATUS_CURED:
             roll = self.instance
             if roll is None:

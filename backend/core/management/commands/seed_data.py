@@ -42,54 +42,89 @@ class Command(BaseCommand):
         worker.save()
         self.stdout.write(self.style.SUCCESS(f"worker {'created' if created else 'updated'}"))
 
-        if Loft.objects.exists():
-            self.stdout.write("业务数据已存在，跳过业务种子写入。")
-            return
-
-        loft = Loft.objects.create(
+        loft, loft_created = Loft.objects.get_or_create(
             name="北岸帆布间",
-            location="港区二号库",
-            notes="浸渍防水台示范 loft",
+            defaults={
+                "location": "港区二号库",
+                "notes": "浸渍防水台示范 loft",
+            },
         )
-        r1 = ClothRoll.objects.create(
-            loft=loft, roll_code="R-01", status=ClothRoll.STATUS_DIPPING, fabric_weight_gsm=420
+        # 幂等：按卷号 upsert，已存在的演示库重跑也能补齐原布乙并复位状态。
+        r1, _ = ClothRoll.objects.update_or_create(
+            loft=loft,
+            roll_code="R-01",
+            defaults={
+                "status": ClothRoll.STATUS_DIPPING,
+                "fabric_weight_gsm": 420,
+                "notes": "同间基准浸渍中卷 420 gsm",
+            },
         )
-        r2 = ClothRoll.objects.create(
-            loft=loft, roll_code="R-02", status=ClothRoll.STATUS_RAW, fabric_weight_gsm=380
+        r2, _ = ClothRoll.objects.update_or_create(
+            loft=loft,
+            roll_code="R-02",
+            defaults={
+                "status": ClothRoll.STATUS_RAW,
+                "fabric_weight_gsm": 380,
+                "notes": "原布甲：与浸渍中卷差 40 gsm，刚好允许",
+            },
         )
-        r3 = ClothRoll.objects.create(
-            loft=loft, roll_code="R-03", status=ClothRoll.STATUS_CURED, fabric_weight_gsm=450
+        r4, _ = ClothRoll.objects.update_or_create(
+            loft=loft,
+            roll_code="R-04",
+            defaults={
+                "status": ClothRoll.STATUS_RAW,
+                "fabric_weight_gsm": 500,
+                "notes": "原布乙：与浸渍中卷差 80 gsm，应被挡住",
+            },
+        )
+        r3, _ = ClothRoll.objects.update_or_create(
+            loft=loft,
+            roll_code="R-03",
+            defaults={
+                "status": ClothRoll.STATUS_CURED,
+                "fabric_weight_gsm": 450,
+                "notes": "已固化示例卷",
+            },
         )
 
         now = timezone.now()
-        DipRun.objects.bulk_create(
-            [
-                DipRun(
-                    roll=r1,
-                    started_at=now - timedelta(hours=8),
-                    resin_pct=Decimal("28.50"),
-                    cure_hours=None,
-                    notes="固化计时中",
-                ),
-                DipRun(
-                    roll=r2,
-                    started_at=now - timedelta(hours=1),
-                    resin_pct=Decimal("26.00"),
-                    cure_hours=Decimal("4.00"),
-                    notes="时长不足，不可标 cured",
-                ),
-                DipRun(
-                    roll=r3,
-                    started_at=now - timedelta(days=2),
-                    resin_pct=Decimal("30.00"),
-                    cure_hours=Decimal("14.50"),
-                    notes="已完成固化",
-                ),
-            ]
+
+        def ensure_dip(roll, started_at, resin_pct, cure_hours, notes):
+            # 以 (卷, 备注) 为稳定键，重跑不产生重复浸渍记录。
+            DipRun.objects.update_or_create(
+                roll=roll,
+                notes=notes,
+                defaults={
+                    "started_at": started_at,
+                    "resin_pct": resin_pct,
+                    "cure_hours": cure_hours,
+                },
+            )
+
+        ensure_dip(
+            r1,
+            now - timedelta(hours=8),
+            Decimal("28.50"),
+            None,
+            "固化计时中",
+        )
+        ensure_dip(
+            r2,
+            now - timedelta(hours=1),
+            Decimal("26.00"),
+            Decimal("4.00"),
+            "时长不足，不可标 cured",
+        )
+        ensure_dip(
+            r3,
+            now - timedelta(days=2),
+            Decimal("30.00"),
+            Decimal("14.50"),
+            "已完成固化",
         )
         self.stdout.write(
             self.style.SUCCESS(
                 f"种子完成：帆布间 {Loft.objects.count()}，布卷 {ClothRoll.objects.count()}，"
-                f"浸渍 {DipRun.objects.count()}"
+                f"浸渍 {DipRun.objects.count()}（北岸帆布间 {'新建' if loft_created else '已存在，已校验'}）"
             )
         )

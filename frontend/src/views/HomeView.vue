@@ -71,12 +71,22 @@ function closePanel() {
   panelError.value = ''
 }
 
+async function markDipping(rollId) {
+  // 一次性「原布→浸渍中」：并发点同一卷只成一笔，落空者后端返回 409。
+  const res = await api.post(`/rolls/${rollId}/start-dipping/`)
+  return res
+}
+
 async function setStatus(status) {
   if (!selected.value) return
   panelError.value = ''
   panelBusy.value = true
   try {
-    await api.patch(`/rolls/${selected.value.id}/`, { status })
+    if (status === 'dipping') {
+      await markDipping(selected.value.id)
+    } else {
+      await api.patch(`/rolls/${selected.value.id}/`, { status })
+    }
     await load()
   } catch (e) {
     const data = e.response?.data
@@ -106,9 +116,13 @@ async function logDip() {
     })
     if (selected.value.status === 'raw') {
       try {
-        await api.patch(`/rolls/${selected.value.id}/`, { status: 'dipping' })
-      } catch {
-        /* 浸渍已记；状态跟进失败不阻断 */
+        await markDipping(selected.value.id)
+      } catch (pe) {
+        // 浸渍已记；状态跟进若被克重差挡住或已被他人完成，明确中文提示，不放进浸渍中。
+        panelError.value =
+          pe.response?.data?.status?.[0] ||
+          pe.response?.data?.detail ||
+          '浸渍记录已写入，但因克重差超限未能改为浸渍中'
       }
     }
     dipForm.cureHours = ''
